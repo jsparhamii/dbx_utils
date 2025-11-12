@@ -14,22 +14,20 @@ def get_foreign_tables(catalog):
     Return a list of tuples (schema_name, table_name) for all foreign tables in a catalog.
     Queries system.information_schema.tables to filter by table type = 'FOREIGN'.
     """
-    try:
-        query = f"""
-            SELECT table_schema, table_name
-            FROM system.information_schema.tables
-            WHERE table_type = 'FOREIGN' and table_catalog = '{catalog}' and table_schema not in ('sys', 'information_schema')
-        """
-        df = spark.sql(query)
-        return [(row['table_schema'], row['table_name']) for row in df.collect()]
-    except Exception as e:
-        print(f"Failed to query information_schema for catalog {catalog}: {e}")
-        return []
+    
+    schemas = [schema_name.databaseName for schema_name in spark.sql(f"SHOW SCHEMAS IN {catalog}").collect() if schema_name.databaseName not in ('sys', 'information_schema')]
+    
+    tables = []
+    for schema in schemas:
+        tables.extend([f"{catalog}.{schema}.{table['tableName']}" for table in spark.sql(f"SHOW TABLES IN {catalog}.{schema}").collect()])
+    
+    return tables
+    
 
-def refresh_table(catalog, schema_table):
+def refresh_table(fqn):
     """Refresh a single foreign table with error handling."""
-    schema, table = schema_table
-    full_table_name = f"{catalog}.{schema}.{table}"
+    
+    full_table_name = fqn
     try:
         spark.sql(f"REFRESH FOREIGN TABLE {full_table_name}")
         print(f"[SUCCESS] Refreshed {full_table_name}")
@@ -47,7 +45,7 @@ def main(catalog, max_workers=8):
     
     # Run refresh in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(refresh_table, catalog, t) for t in tables]
+        futures = [executor.submit(refresh_table, t) for t in tables]
         concurrent.futures.wait(futures)
     
     print("Refresh process complete.")
